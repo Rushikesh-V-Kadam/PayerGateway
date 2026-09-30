@@ -1,0 +1,105 @@
+### =====================================================================================
+### Payer Gateway API - the whole prior authorization flow, in order.
+### Run it in Visual Studio / VS Code (REST Client). Needs: Provider FHIR API (5100), mock EHR (5090), mock payer (5080).
+### Replace formId / questionnaire linkIds with the values returned by the calls above them.
+### =====================================================================================
+@gateway = http://localhost:5200
+@apiKey =
+
+### 0. Which payers can the EHR name?
+GET {{gateway}}/api/v1/payers
+X-Api-Key: {{apiKey}}
+
+### 0b. Test the payer connection (CDS Hooks discovery)
+POST {{gateway}}/api/v1/payers/MockPayer/discover
+X-Api-Key: {{apiKey}}
+
+### 1. CRD: the order is signed -> read callDtr / callPas / questionnaireUrls / coverageAssertionId
+POST {{gateway}}/api/v1/crd/order-sign
+Content-Type: application/json
+X-Api-Key: {{apiKey}}
+
+{
+  "eventId": "evt-20260929-0001",
+  "payerName": "MockPayer",
+  "patientId": "pat-1001",
+  "orderIds": ["ord-1001"],
+  "userPractitionerId": "prac-2001"
+}
+
+### 2a. DTR: get the payer's questionnaire as simple questions (callDtr = true)
+POST {{gateway}}/api/v1/dtr/forms
+Content-Type: application/json
+X-Api-Key: {{apiKey}}
+
+{
+  "payerName": "MockPayer",
+  "patientId": "pat-1001",
+  "orderIds": ["ord-1001"],
+  "questionnaireUrls": ["http://localhost:5080/fhir/Questionnaire/dialysis-pa"],
+  "coverageAssertionId": "CA-20260929-0001"
+}
+
+### 2b. DTR: answer it (use the formId and linkIds from 2a)
+POST {{gateway}}/api/v1/dtr/forms/frm-000000000000/answers
+Content-Type: application/json
+X-Api-Key: {{apiKey}}
+
+{
+  "complete": true,
+  "authorPractitionerId": "prac-2001",
+  "answers": [
+    { "linkId": "egfr", "values": ["12"] },
+    { "linkId": "on-dialysis", "values": ["true"] },
+    { "linkId": "esrd-date", "values": ["2026-08-10"] }
+  ]
+}
+
+### 2c. DTR: read the form back
+GET {{gateway}}/api/v1/dtr/forms/frm-000000000000
+X-Api-Key: {{apiKey}}
+
+### 3. PAS: submit (completed DTR forms of ord-1001 are attached automatically)
+POST {{gateway}}/api/v1/pas/requests
+Content-Type: application/json
+X-Api-Key: {{apiKey}}
+
+{
+  "requestId": "PA-2026-0001",
+  "payerName": "MockPayer",
+  "patientId": "pat-1001",
+  "requestingOrganizationId": "org-3001",
+  "orderIds": ["ord-1001"],
+  "priority": "routine",
+  "documentIds": ["doc-7001"],
+  "notes": "Patient started hemodialysis on 2026-09-01."
+}
+
+### 3b. PAS: latest stored decision
+GET {{gateway}}/api/v1/pas/requests/PA-2026-0001
+X-Api-Key: {{apiKey}}
+
+### 3c. PAS: ask the payer now ($inquire)
+POST {{gateway}}/api/v1/pas/requests/PA-2026-0001/inquire
+X-Api-Key: {{apiKey}}
+
+### 4a. CDex: what does the payer need? (pended requests)
+GET {{gateway}}/api/v1/cdex/requests/PA-2026-0001/information-requests?refresh=true
+X-Api-Key: {{apiKey}}
+
+### 4b. CDex: send the additional documents
+POST {{gateway}}/api/v1/cdex/requests/PA-2026-0001/attachments
+Content-Type: application/json
+X-Api-Key: {{apiKey}}
+
+{
+  "documentIds": ["doc-7002"],
+  "final": true
+}
+
+### 5. Cancel (optional)
+POST {{gateway}}/api/v1/pas/requests/PA-2026-0001/cancel
+Content-Type: application/json
+X-Api-Key: {{apiKey}}
+
+{ "reason": "Order cancelled by the physician." }
